@@ -1,0 +1,513 @@
+<?php 
+ini_set("display_errors",false);
+if($_SESSION['FON_IS_MOBILE']!=1){ 
+include('../../connection/connect.php'); 
+}
+
+$fiscal_year = date('Y');
+//Total Clients LIFE TIME
+$total_clients_all = $conn->prepare("SELECT count(*) AS total_clients,EXTRACT(MONTH FROM date_created ) AS month FROM client WHERE company_id='".$_SESSION['FON_COMPANY']."' ");
+$total_clients_all->execute();
+$total_client_rows_all = $total_clients_all->fetch(PDO::FETCH_ASSOC);
+//Total Clients per year
+$total_clients_year = $conn->prepare("SELECT count(*) AS total_clients, EXTRACT(YEAR FROM date_created ) AS year FROM client WHERE company_id='".$_SESSION['FON_COMPANY']."' GROUP BY EXTRACT(YEAR FROM date_created) ORDER BY EXTRACT(YEAR FROM date_created) ASC ");
+$total_clients_year->execute();
+$total_clients_year_rows = $total_clients_year->fetchAll(PDO::FETCH_ASSOC);
+//Filter Clients as Active and Inactive
+$active_inactive = $conn->prepare("SELECT  acc_active, COUNT(IF(acc_active='Yes',acc_active,NULL)) AS total_active,COUNT(IF(acc_active !='Yes',acc_active,NULL)) AS total_inactive,
+EXTRACT(YEAR FROM date_created) AS year FROM client  WHERE company_id='".$_SESSION['FON_COMPANY']."'
+GROUP BY EXTRACT(YEAR FROM date_created) ORDER BY EXTRACT(YEAR FROM date_created) ASC ");
+$active_inactive->execute();
+$active_inactive_rows = $active_inactive->fetchAll(PDO::FETCH_ASSOC);
+
+//Get Months
+$get_months = $conn->prepare("SELECT  EXTRACT(month FROM stat.val_date) AS month, EXTRACT(month FROM stat.val_date) AS year, DATE_FORMAT(stat.val_date,'%b') AS month_ FROM ".$db_prefix."billingdb_rel.statment  AS stat
+WHERE stat.company_id='".$_SESSION['FON_COMPANY']."' AND stat.pay_type='INVOICE' AND EXTRACT(year FROM stat.val_date)='".$fiscal_year."'  GROUP BY EXTRACT(month FROM stat.val_date)  ORDER BY EXTRACT(month FROM stat.val_date) ASC");
+$get_months->execute();
+$month_rows = $get_months->fetchAll(PDO::FETCH_ASSOC);
+//Total Sales Per Product --Dollar
+$per_product_dollar = $conn->prepare("SELECT c.charge_desc, prod.prod_name, SUM(IF(stat.cr_dr='C',stat.amount,0.00)) AS creditBal FROM ".$db_prefix."billingdb_rel.statment  AS stat
+LEFT JOIN ".$db_prefix."billingdb_rel.bill_invoice AS bi ON bi.id = stat.invoice_id
+LEFT JOIN prod_service AS prod ON prod.id = bi.product_id
+LEFT JOIN charges AS c ON c.gl_id = stat.gl_id
+WHERE stat.company_id='".$_SESSION['FON_COMPANY']."' AND stat.pay_type='INVOICE' AND stat.currency_id='1' AND EXTRACT(year FROM stat.val_date)='".$fiscal_year."'  AND EXTRACT(month FROM stat.val_date) GROUP BY bi.product_id ORDER BY EXTRACT(month FROM stat.val_date), bi.product_id ASC");
+$per_product_dollar->execute();
+$per_product_dollar_rows = $per_product_dollar->fetchAll(PDO::FETCH_ASSOC);
+//Total Sales Per Product --KES
+$per_product_kes = $conn->prepare("SELECT c.charge_desc, prod.prod_name,  SUM(IF(stat.cr_dr='C',stat.amount,0.00)) AS creditBal FROM ".$db_prefix."billingdb_rel.statment  AS stat
+LEFT JOIN ".$db_prefix."billingdb_rel.bill_invoice AS bi ON bi.id = stat.invoice_id
+LEFT JOIN prod_service AS prod ON prod.id = bi.product_id
+LEFT JOIN charges AS c ON c.gl_id = stat.gl_id
+WHERE stat.company_id='".$_SESSION['FON_COMPANY']."' AND stat.pay_type='INVOICE' AND stat.currency_id='2' AND EXTRACT(year FROM stat.val_date)='".$fiscal_year."'  AND EXTRACT(month FROM stat.val_date) GROUP BY bi.product_id ORDER BY EXTRACT(month FROM stat.val_date), bi.product_id ASC");
+
+$per_product_kes->execute();
+$per_product_kes_rows = $per_product_kes->fetchAll(PDO::FETCH_ASSOC);
+
+//Total Kes All products
+$total_kes_per_product = 0.00;
+foreach($per_product_kes_rows as $per_product_kes_row){
+$total_kes_per_product += $per_product_kes_row['creditBal'];
+}
+//Total Dollar All products
+$total_dollar_per_product = 0.00;
+foreach($per_product_dollar_rows as $per_product_dollar_row){
+$total_dollar_per_product += $per_product_dollar_row['creditBal'];
+}	
+//Top 10 clients with balances dollar
+$top_ten_dollar = $conn->prepare("SELECT cl.account_no, cl.client_name, SUM(IF(stat.cr_dr='D',stat.amount, - stat.amount)) AS Bal 
+FROM ".$db_prefix."billingdb_rel.statment AS stat 
+LEFT JOIN client AS cl ON cl.id = stat.client_id
+LEFT JOIN ".$db_prefix."billingdb_rel.glmaster AS gl ON gl.id = stat.gl_id 
+WHERE stat.company_id='".$_SESSION['FON_COMPANY']."' AND stat.currency_id='1'  AND  (gl.cntrl_type='D' OR gl.cntrl_type='N' OR stat.gl_id IN (SELECT gl_id FROM charges ))   
+GROUP BY cl.client_no
+ORDER BY Bal DESC LIMIT 10");	
+$top_ten_dollar->execute();
+$top_ten_dollar_rows = $top_ten_dollar->fetchAll();
+//Top 10 clients with balances kes
+$top_ten_kes = $conn->prepare("SELECT cl.account_no, cl.client_name, SUM(IF(stat.cr_dr='D',stat.amount, - stat.amount)) AS Bal 
+FROM ".$db_prefix."billingdb_rel.statment AS stat 
+LEFT JOIN client AS cl ON cl.id = stat.client_id
+LEFT JOIN ".$db_prefix."billingdb_rel.glmaster AS gl ON gl.id = stat.gl_id 
+WHERE stat.company_id='".$_SESSION['FON_COMPANY']."' AND stat.currency_id='2' AND  (gl.cntrl_type='D' OR gl.cntrl_type='N' OR stat.gl_id IN (SELECT gl_id FROM charges ))   
+GROUP BY cl.client_no
+ORDER BY Bal DESC LIMIT 10");	
+
+$top_ten_kes->execute();
+$top_ten_kes_rows = $top_ten_kes->fetchAll();
+
+//Top 10 Creditors Balances Dollar
+$top_ten_creditors_dollar = $conn->prepare("SELECT cl.vendor_name,
+EXTRACT(MONTH FROM stat.val_date) AS month_name, 
+SUM(IF(stat.cr_dr='C',amount, - amount)) AS Bal FROM ".$db_prefix."billingdb_rel.statment AS stat 
+LEFT JOIN ".$db_prefix."inventory_rel.vendor AS cl ON cl.id = stat.client_id 
+LEFT JOIN ".$db_prefix."billingdb_rel.glmaster AS gl ON gl.id = stat.gl_id 
+LEFT JOIN ".$db_prefix."billingdb_rel.glmaster AS gls ON gls.id = stat.pay_gl_id 
+WHERE stat.company_id='".$_SESSION['FON_COMPANY']."' AND  gl.cntrl_type ='C' AND stat.currency_id='1'
+GROUP BY cl.vendor_no ORDER BY Bal DESC LIMIT 10");	
+
+$top_ten_creditors_dollar->execute();
+$top_ten_creditors_dollar_rows = $top_ten_creditors_dollar->fetchAll(PDO::FETCH_ASSOC);
+
+//Top 10 Creditors Balances KES
+$top_ten_creditors_kes= $conn->prepare("SELECT cl.vendor_name,
+EXTRACT(MONTH FROM stat.val_date) AS month_name,
+SUM(IF(stat.cr_dr='C',amount, - amount)) AS Bal FROM ".$db_prefix."billingdb_rel.statment AS stat 
+LEFT JOIN ".$db_prefix."inventory_rel.vendor AS cl ON cl.id = stat.client_id 
+LEFT JOIN ".$db_prefix."billingdb_rel.glmaster AS gl ON gl.id = stat.gl_id 
+LEFT JOIN ".$db_prefix."billingdb_rel.glmaster AS gls ON gls.id = stat.pay_gl_id 
+WHERE stat.company_id='".$_SESSION['FON_COMPANY']."' AND  gl.cntrl_type ='C' AND stat.currency_id='2'
+GROUP BY cl.vendor_no ORDER BY Bal DESC LIMIT 10");	
+$top_ten_creditors_kes->execute();
+$top_ten_creditors_kes_rows =$top_ten_creditors_kes->fetchAll(PDO::FETCH_ASSOC);	
+?>
+
+    <h3> Accounting Statistics</h3>
+    <p><font color="grey">A statistical summary of clients and revenue collection for current fiscal year.</font></p><hr/>
+
+<strong>Year: </strong>
+  <select id="year" name="year">
+  <?php echo '<option value='.$fiscal_year.'>'.$fiscal_year.'</option>'; ?>
+    <?php
+    $firstYear = (int)date('Y') - 2;
+    $lastYear = $firstYear + 2;
+    for($i=$firstYear;$i<=$lastYear;$i++)
+    {
+    echo '<option value='.$i.'>'.$i.'</option>';
+    }
+    ?>
+    </select><hr/>
+	<script>
+	$("#year").change(function(){
+	year = $("#year").val();
+	window.location.href="?dashboard&action=dash_home&year="+year+"";
+	
+	});
+	</script>
+  <link href="../select2/select2.css" rel="stylesheet"/>
+ <script src="../select2/select2.js"></script>
+ <script>
+ $(document).ready(function(){ 
+  $("#year").select2();  
+ });
+ </script>
+<!-- Bootstrap Daterangepicker -->
+<script type="text/javascript" src="../assets/js-core/raphael.js"></script>
+<!--<link rel="stylesheet" type="text/css" href="../../assets/widgets/charts/morris/morris.css">-->
+<script type="text/javascript" src="../assets/widgets/charts/morris/morris.js"></script>
+
+<script>
+$(function() {
+    "use strict";
+   
+}
+
+),
+
+
+$(function() {
+    var a=[ 
+	 <?php
+	 foreach($total_clients_year_rows as $total_clients_year_row){
+	 ?>
+	{
+        period: "<?php echo $total_clients_year_row['year'];?>", total_clients: <?php echo $total_clients_year_row['total_clients'];  ?>
+    }
+    , 
+	<?php
+	}
+	?>
+	
+ 
+    ];
+    Morris.Line( {
+        element: "total-clients", data: a, xkey: "period", ykeys: ["total_clients"], labels: ["Total Clients"]
+    }
+    )
+}
+
+),
+$(function() {
+    var b=[ 
+	<?php
+	foreach($active_inactive_rows as $active_inactive_row){
+	$churned = $active_inactive_row['total_active']-$active_inactive_row['total_inactive'];
+	if($churned>0){ $churned= 0;}
+	?>
+	{
+        period: "<?php echo $active_inactive_row['year']; ?>", active:<?php echo $active_inactive_row['total_active']; ?>, inactive: <?php echo $active_inactive_row['total_inactive']; ?>, churned: <?php echo $churned; ?>
+    },
+	<?php
+	}
+	?>
+   
+    ];
+    Morris.Line( {
+        element: "active-inactive", data: b, xkey: "period", ykeys: ["active", "inactive", "churned"], labels: ["Active", "Inactive", "Churned"]
+    }
+    )
+}
+
+),
+$(function() {
+    "use strict";
+    var a=[ 
+	<?php
+	foreach($month_rows as $month_row){
+	$month = $month_row['month'];
+	//Let get the revenue for the returned month
+	//Lets get the revenue each month in the current fiscal year
+	$revenues = $conn->prepare("SELECT curr.curr_symbol,  SUM(IF(stat.cr_dr='C',stat.amount,0.00)) AS creditBal,EXTRACT(year FROM stat.val_date) AS year,stat.currency_id, 
+								EXTRACT(month FROM stat.val_date) AS month FROM ".$db_prefix."billingdb_rel.statment  AS stat
+								LEFT JOIN logical_table3 AS curr ON curr.id = stat.currency_id
+								WHERE stat.company_id='".$_SESSION['FON_COMPANY']."' AND stat.pay_type='INVOICE' AND EXTRACT(year FROM stat.val_date)='".$fiscal_year."'   AND EXTRACT(month FROM stat.val_date) ='".$month."'
+								GROUP BY EXTRACT(month FROM stat.val_date),stat.currency_id  
+								ORDER BY EXTRACT(month FROM stat.val_date), stat.currency_id ASC");
+		
+	$revenues->execute();
+	$revenue_rows = $revenues->fetchAll(PDO::FETCH_ASSOC);
+	
+	?>
+	{
+        period: "<?php echo $month_row['month_']; ?>", <?php foreach($revenue_rows as $revenue_row){ echo $revenue_row['curr_symbol'].": ".$revenue_row['creditBal'].", "; } ?> 
+    }
+    , 
+	<?php
+	}
+	?>
+    ];
+    Morris.Bar( {
+        element: "monthly-total-sales", data: a, xkey: "period", ykeys: ["$", "KES"], labels: ["Dollar", "Shilling"], xLabelAngle: 60
+    }
+    )
+}
+
+),
+$(function() {
+    "use strict";
+    var a=[ 
+	<?php
+	foreach($month_rows as $month_row){
+	$month = $month_row['month'];
+	//Let get the revenue for the returned month
+	//Lets get the revenue each month in the current fiscal year
+	$revenues = $conn->prepare("SELECT curr.curr_symbol,  SUM(IF(stat.cr_dr='C',stat.amount,0.00)) AS creditBal,EXTRACT(year FROM stat.val_date) AS year,stat.currency_id, 
+								EXTRACT(month FROM stat.val_date) AS month FROM ".$db_prefix."billingdb_rel.statment  AS stat
+								LEFT JOIN logical_table3 AS curr ON curr.id = stat.currency_id
+								WHERE stat.company_id='".$_SESSION['FON_COMPANY']."' AND stat.pay_type='RECEIPT' AND EXTRACT(year FROM stat.val_date)='".$fiscal_year."'   AND EXTRACT(month FROM stat.val_date) ='".$month."'
+								GROUP BY EXTRACT(month FROM stat.val_date),stat.currency_id  
+								ORDER BY EXTRACT(month FROM stat.val_date), stat.currency_id ASC");
+		
+	$revenues->execute();
+	$revenue_rows = $revenues->fetchAll(PDO::FETCH_ASSOC);
+	
+	?>
+	{
+        period: "<?php echo $month_row['month_']; ?>", <?php foreach($revenue_rows as $revenue_row){ echo $revenue_row['curr_symbol'].": ".$revenue_row['creditBal'].", "; } ?> 
+    }
+    , 
+	<?php
+	}
+	?>
+    ];
+    Morris.Bar({
+        element: "monthly-total-receipts",colors:["#929292"], data: a, xkey: "period", ykeys: ["$", "KES"], labels: ["Dollar", "Shilling"], xLabelAngle: 60
+    }
+    ),
+	Morris.Donut({
+        element:"product-sales-pie-kes", data:[ 
+		<?php
+
+		foreach($per_product_kes_rows as $per_product_kes_row){
+		$product_percentage =   ($per_product_kes_row['creditBal']/$total_kes_per_product) * 100;
+		
+		?>
+		{
+            label: "<?php if($per_product_kes_row['prod_name']!=''){echo titleCase($per_product_kes_row['prod_name']);}elseif($per_product_kes_row['charge_desc'] !=''){ echo titleCase($per_product_kes_row['charge_desc']);}else{ echo titleCase("OTHER");}  ?>", value: <?php echo round($product_percentage,2); ?>
+        }
+        , 
+		<?php
+		}
+
+		?>
+        ], formatter:function(a) {
+            return a+"%"
+        }
+    }
+    ),
+	Morris.Donut({
+        element:"product-sales-pie-dollar", data:[ 
+			<?php
+		foreach($per_product_dollar_rows as $per_product_dollar_row){
+		$product_percentage =  ($per_product_dollar_row['creditBal']/$total_dollar_per_product) * 100;
+		
+		?>
+		{
+            label: "<?php if($per_product_dollar_row['prod_name']!=''){echo titleCase($per_product_dollar_row['prod_name']);}elseif($per_product_dollar_row['charge_desc'] !=''){ echo titleCase($per_product_dollar_row['charge_desc']);}else{ echo titleCase("OTHER");}  ?>", value: <?php echo round($product_percentage,2); ?>
+        }
+        , 
+		<?php
+		}
+		?>
+        ], formatter:function(a) {
+            return a+"%"
+        }
+    }
+    ), Morris.Bar( {
+        element:"top-ten-balances-kes", data:[ 
+		<?php
+		foreach($top_ten_kes_rows as $top_ten_kes_row){
+		if($top_ten_kes_row['Bal']>0){
+		?>
+		{
+            client_name: "<?php  echo titleCase($top_ten_kes_row['client_name']);?>", total_balance: <?php echo $top_ten_kes_row['Bal']; ?>
+        }
+        , 
+		<?php
+		}
+		}
+		?>
+        ], xkey:"client_name", ykeys:["total_balance"], labels:["Total Balance(KES)"], barRatio:.2, xLabelAngle:0, hideHover:"auto"
+    }
+    )
+	, Morris.Bar( {
+        element:"top-ten-balances-dollar", data:[ 
+		<?php
+		foreach($top_ten_dollar_rows as $top_ten_dollar_row){
+		if($top_ten_dollar_row['Bal']>0){
+		?>
+		{
+            client_name: "<?php  echo titleCase($top_ten_dollar_row['client_name']);?>", total_balance: <?php echo $top_ten_dollar_row['Bal']; ?>
+        }
+        , 
+		<?php
+		}
+		}
+		?>
+        ], xkey:"client_name", ykeys:["total_balance"], labels:["Total Balance($)"], barRatio:.2, xLabelAngle:0, hideHover:"auto"
+    }
+    )
+	, Morris.Bar( {
+        element:"top-ten-balances-creditor-dollar", data:[ 
+		<?php
+		foreach($top_ten_creditors_dollar_rows as $top_ten_creditors_dollar_row){
+		if($top_ten_creditors_dollar_row['Bal']>0){
+		?>
+		{
+            vendor_name: "<?php  echo titleCase($top_ten_creditors_dollar_row['vendor_name']);?>", total_balance: <?php echo $top_ten_creditors_dollar_row['Bal']; ?>
+        }
+        , 
+		<?php
+		}
+		}
+		?>
+        ], xkey:"vendor_name", ykeys:["total_balance"], labels:["Total Balance($)"], barRatio:.2, xLabelAngle:0, hideHover:"auto"
+    }
+    )
+	, Morris.Bar( {
+        element:"top-ten-balances-creditor-kes", data:[ 
+		<?php
+		foreach($top_ten_creditors_kes_rows as $top_ten_creditors_kes_row){
+		if($top_ten_creditors_kes_row['Bal']>0){
+		?>
+		{
+            vendor_name: "<?php  echo titleCase($top_ten_creditors_kes_row['vendor_name']);?>", total_balance: <?php echo $top_ten_creditors_kes_row['Bal']; ?>
+        }
+        , 
+		<?php
+		}
+		}
+		?>
+        ], xkey:"vendor_name", ykeys:["total_balance"], labels:["Total Balance(KES)"], barRatio:.2, xLabelAngle:0, hideHover:"auto"
+    }
+    )
+}
+
+)
+
+
+;
+</script>
+<div id="scroll_content">
+ <h3>Clients</h3><hr/>
+ <div class="row">
+    <div class="col-md-6">
+        <div class="panel">
+            <div class="panel-body">
+                <h3>
+                    Total Clients(Lifetime) <span class="btn btn-xs btn-success"><?php echo number_format($total_client_rows_all['total_clients']); ?></span>
+                </h3><br/>
+                <div class="example-box-wrapper">
+                    <div id="total-clients" class="graph" style="background:#FFCCCC"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+      <div class="col-md-6">
+        <div class="panel">
+            <div class="panel-body">
+                <h3>
+                    Active, Inactive & Churned Clients
+                </h3><br/>
+                <div class="example-box-wrapper">
+                    <div id="active-inactive" class="graph" style="background:#CCFFFF"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<h3>Revenue & Collection Report </h3><hr/>
+<div class="row">
+    <div class="col-md-12">
+        <div class="panel">
+            <div class="panel-body">
+                 <h3>
+                    Billing Monthly(Total) Fiscal Year: <code><?php echo $fiscal_year; ?></code>
+                </h3><br/>
+                <div class="example-box-wrapper">
+                    <div id="monthly-total-sales"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-md-12">
+        <div class="panel">
+            <div class="panel-body">
+                 <h3>
+                    Collection Monthly(Total) Fiscal Year: <code><?php echo $fiscal_year; ?></code>
+                </h3><br/>
+                <div class="example-box-wrapper">
+                    <div id="monthly-total-receipts" style="background:#CCFFFF"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="panel">
+            <div class="panel-body">
+                <h3>
+                    Product Sales (KES) Fiscal Year: <code><?php echo $fiscal_year; ?></code>
+                </h3><br/>
+                <div class="example-box-wrapper">
+                    <div id="product-sales-pie-kes" class="graph"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+	    <div class="col-md-6">
+        <div class="panel">
+            <div class="panel-body">
+                <h3>
+                    Product Sales (Dollar) Fiscal Year: <code><?php echo $fiscal_year; ?></code>
+                </h3><br/>
+                <div class="example-box-wrapper">
+                    <div id="product-sales-pie-dollar"  class="graph"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<h3> Debtors & Payment Report </h3><hr/>
+<div class="row">
+    <div class="col-md-12">
+        <div class="panel">
+            <div class="panel-body">
+                 <h3>
+                   Top 10 Debtor Balances(KES) Fiscal Year: <code><?php echo "ALL"; ?></code>
+                </h3><br/>
+                <div class="example-box-wrapper">
+                    <div id="top-ten-balances-kes" style="background:#FFCCCC"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-md-12">
+        <div class="panel">
+            <div class="panel-body">
+                 <h3>
+                   Top 10 Debtor Balances(Dollar) Fiscal Year: <code>ALL</code>
+                </h3><br/>
+                <div class="example-box-wrapper">
+                    <div id="top-ten-balances-dollar" style="background:#CCFFFF"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-md-12">
+        <div class="panel">
+            <div class="panel-body">
+                 <h3>
+                   Top 10 Creditor Balances(KES) Fiscal Year: <code>ALL</code>
+                </h3><br/>
+                <div class="example-box-wrapper">
+                    <div id="top-ten-balances-creditor-kes"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-md-12">
+        <div class="panel">
+            <div class="panel-body">
+                 <h3>
+                   Top 10 Creditor Balances(Dollar) Fiscal Year: <code>ALL</code>
+                </h3><br/>
+                <div class="example-box-wrapper">
+                    <div id="top-ten-balances-creditor-dollar"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</div>
+</div>
+
